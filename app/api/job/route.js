@@ -1,5 +1,5 @@
 function decodeEntities(text = '') {
-  return text
+  return String(text)
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
@@ -11,12 +11,27 @@ function decodeEntities(text = '') {
 
 function cleanHtml(html = '') {
   return decodeEntities(
-    html
+    String(html)
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
   ).trim()
+}
+
+function textValue(value) {
+  if (!value) return ''
+  if (typeof value === 'string') return cleanHtml(value)
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join(' · ')
+  if (typeof value === 'object') {
+    return cleanHtml(value.name || value.value || value.description || '')
+  }
+  return cleanHtml(String(value))
 }
 
 function findJobPosting(value) {
@@ -32,7 +47,54 @@ function findJobPosting(value) {
   const type = value['@type']
   if (type === 'JobPosting' || (Array.isArray(type) && type.includes('JobPosting'))) return value
   if (value['@graph']) return findJobPosting(value['@graph'])
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') {
+      const found = findJobPosting(child)
+      if (found) return found
+    }
+  }
   return null
+}
+
+function locationValue(job) {
+  const locations = Array.isArray(job?.jobLocation) ? job.jobLocation : [job?.jobLocation].filter(Boolean)
+  return locations.map(item => {
+    const a = item?.address || item
+    return [a?.addressLocality, a?.addressRegion, a?.addressCountry?.name || a?.addressCountry]
+      .filter(Boolean).join(', ')
+  }).filter(Boolean).join(' · ')
+}
+
+function structuredFromJob(job) {
+  const details = {
+    title: textValue(job?.title),
+    company: textValue(job?.hiringOrganization?.name),
+    location: locationValue(job),
+    employmentType: textValue(job?.employmentType),
+    datePosted: textValue(job?.datePosted),
+    validThrough: textValue(job?.validThrough),
+    description: textValue(job?.description),
+    responsibilities: textValue(job?.responsibilities),
+    qualifications: textValue(job?.qualifications),
+    skills: textValue(job?.skills),
+    experience: textValue(job?.experienceRequirements),
+    education: textValue(job?.educationRequirements),
+    industry: textValue(job?.industry),
+  }
+
+  const text = [
+    details.title,
+    details.company,
+    details.description,
+    details.responsibilities,
+    details.qualifications,
+    details.skills,
+    details.experience,
+    details.education,
+    details.industry,
+  ].filter(Boolean).join('\n\n')
+
+  return { details, text: cleanHtml(text) }
 }
 
 function extractStructuredJob(html) {
@@ -42,36 +104,24 @@ function extractStructuredJob(html) {
       const parsed = JSON.parse(match[1].trim())
       const job = findJobPosting(parsed)
       if (!job) continue
-      const parts = [
-        job.title,
-        job.hiringOrganization?.name,
-        job.description,
-        job.qualifications,
-        job.responsibilities,
-        job.skills,
-        job.experienceRequirements,
-        job.educationRequirements,
-      ].filter(Boolean)
-      const text = cleanHtml(parts.join(' '))
-      if (text.length > 180) return text
+      const result = structuredFromJob(job)
+      if (result.text.length > 180) return result
     } catch {}
   }
-  return ''
+  return null
+}
+
+function metaValue(html, key, attr = 'property') {
+  const re1 = new RegExp(`<meta[^>]+${attr}=["']${key}["'][^>]+content=["']([^"']+)["']`, 'i')
+  const re2 = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+${attr}=["']${key}["']`, 'i')
+  return cleanHtml(html.match(re1)?.[1] || html.match(re2)?.[1] || '')
 }
 
 function extractMeta(html) {
-  const values = []
-  const patterns = [
-    /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
-    /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i,
-    /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i,
-    /<title[^>]*>([\s\S]*?)<\/title>/i,
-  ]
-  for (const pattern of patterns) {
-    const m = html.match(pattern)
-    if (m?.[1]) values.push(m[1])
-  }
-  return cleanHtml(values.join(' '))
+  const title = metaValue(html, 'og:title') || cleanHtml(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '')
+  const description = metaValue(html, 'og:description') || metaValue(html, 'description', 'name')
+  const details = { title, company: '', location: '', employmentType: '', datePosted: '', validThrough: '', description, responsibilities: '', qualifications: '', skills: '', experience: '', education: '', industry: '' }
+  return { details, text: cleanHtml([title, description].filter(Boolean).join('\n\n')) }
 }
 
 export async function POST(request) {
@@ -91,7 +141,7 @@ export async function POST(request) {
       cache: 'no-store',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; JobFit/1.0; +https://job-fit-one.vercel.app)',
-        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9,tr;q=0.8,nl;q=0.7',
         Accept: 'text/html,application/xhtml+xml',
       },
       signal: AbortSignal.timeout(10000),
@@ -102,15 +152,20 @@ export async function POST(request) {
     }
 
     const html = await response.text()
-    let text = extractStructuredJob(html)
-    if (!text) text = extractMeta(html)
+    const structured = extractStructuredJob(html)
+    const result = structured || extractMeta(html)
 
-    if (text.length < 120) {
-      return Response.json({ error: 'Bu site ilan metnini otomatik paylaşmıyor. İlan açıklamasını kopyalayıp yapıştır.' }, { status: 422 })
+    if (!result.text || result.text.length < 120) {
+      return Response.json({ error: 'Bu site ilan detaylarını otomatik paylaşmıyor. İlan açıklamasını kopyalayıp yapıştır.' }, { status: 422 })
     }
 
-    return Response.json({ text: text.slice(0, 30000), source: parsed.hostname.replace(/^www\./, '') })
-  } catch (error) {
+    return Response.json({
+      text: result.text.slice(0, 30000),
+      details: result.details,
+      source: parsed.hostname.replace(/^www\./, ''),
+      structured: Boolean(structured),
+    })
+  } catch {
     return Response.json({ error: 'İlan URL’si okunamadı. İlan açıklamasını yapıştırabilirsin.' }, { status: 500 })
   }
 }
