@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 const STOP = new Set('ve veya ile için bir bu şu o da de ki mi mı mu mü the a an and or to of in on for with as is are be will you your we our'.split(' '))
 
@@ -37,6 +37,10 @@ export default function Home() {
   const [cv, setCv] = useState('')
   const [job, setJob] = useState('')
   const [result, setResult] = useState(null)
+  const [fileName, setFileName] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileRef = useRef(null)
   const ready = useMemo(() => cv.trim().length > 40 && job.trim().length > 40, [cv, job])
 
   function run() {
@@ -47,7 +51,40 @@ export default function Home() {
   function demo() {
     setCv(sampleCv)
     setJob(sampleJob)
+    setFileName('Örnek CV')
     setResult(analyse(sampleCv, sampleJob))
+  }
+
+  async function handleFile(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setUploading(true)
+    setUploadError('')
+    setFileName(file.name)
+
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await fetch('/api/extract', { method: 'POST', body: form })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'CV okunamadı.')
+      setCv(data.text)
+      setFileName(data.fileName || file.name)
+    } catch (error) {
+      setUploadError(error.message || 'CV yüklenirken hata oluştu.')
+      setFileName('')
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  function clearFile() {
+    setCv('')
+    setFileName('')
+    setUploadError('')
+    setResult(null)
   }
 
   return (
@@ -60,7 +97,7 @@ export default function Home() {
       <section className="hero wrap">
         <div className="eyebrow">AI destekli iş başvuru copilotu</div>
         <h1>Bu işe gerçekten <span>uygun musun?</span></h1>
-        <p>CV’ni ve ilanı karşılaştır. JobFit sana eşleşme skorunu, güçlü yönlerini ve CV’ndeki eksikleri birkaç saniyede göstersin.</p>
+        <p>CV’ni yükle ve ilanı karşılaştır. JobFit sana eşleşme skorunu, güçlü yönlerini ve CV’ndeki eksikleri birkaç saniyede göstersin.</p>
         <div className="heroActions">
           <button className="primary" onClick={() => document.getElementById('analyser')?.scrollIntoView({ behavior: 'smooth' })}>CV’mi analiz et</button>
           <button className="ghost" onClick={demo}>Örnek analizi göster</button>
@@ -70,15 +107,32 @@ export default function Home() {
       <section id="analyser" className="wrap analyser">
         <div className="inputCard">
           <div className="step">01</div>
-          <h2>CV içeriğin</h2>
-          <p>Şimdilik CV metnini yapıştır. PDF/DOCX yükleme bir sonraki sürümde.</p>
-          <textarea value={cv} onChange={e => setCv(e.target.value)} placeholder="Deneyim, eğitim, beceri ve projelerini içeren CV metnini buraya yapıştır..." />
+          <h2>CV’ni yükle</h2>
+          <p>PDF, DOCX veya TXT dosyanı yükle. JobFit metni otomatik çıkarır. İstersen alttan elle de düzenleyebilirsin.</p>
+
+          <input ref={fileRef} className="fileInput" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={handleFile} />
+          <button className="uploadBox" type="button" onClick={() => fileRef.current?.click()} disabled={uploading}>
+            <span className="uploadIcon">↑</span>
+            <strong>{uploading ? 'CV okunuyor…' : fileName ? 'Başka CV yükle' : 'CV dosyası seç'}</strong>
+            <small>PDF · DOCX · TXT · Maks. 8 MB</small>
+          </button>
+
+          {fileName && !uploading && (
+            <div className="fileStatus">
+              <div><span>✓</span><div><strong>{fileName}</strong><small>CV içeriği başarıyla okundu</small></div></div>
+              <button type="button" onClick={clearFile}>Kaldır</button>
+            </div>
+          )}
+          {uploadError && <div className="uploadError">{uploadError}</div>}
+
+          <div className="orLine"><span>veya metni düzenle / yapıştır</span></div>
+          <textarea value={cv} onChange={e => setCv(e.target.value)} placeholder="CV içeriği yükleme sonrası burada görünecek. İstersen elle de yapıştırabilirsin..." />
         </div>
 
         <div className="inputCard">
           <div className="step">02</div>
           <h2>İş ilanı</h2>
-          <p>İlan açıklamasını yapıştır. URL analizi sonraki sürümde.</p>
+          <p>İlan açıklamasını yapıştır. Sonraki adımda LinkedIn/Kariyer URL’sini doğrudan okutacağız.</p>
           <textarea value={job} onChange={e => setJob(e.target.value)} placeholder="İş ilanının görev, gereksinim ve yetkinlik metnini buraya yapıştır..." />
         </div>
       </section>
@@ -110,7 +164,7 @@ export default function Home() {
           </div>
 
           <div className="nextCard">
-            <div><small>SONRAKİ ADIM</small><h3>CV’ni bu ilana özel yeniden yaz</h3><p>Yakında JobFit, olmayan tecrübeyi uydurmadan deneyimlerini ATS uyumlu şekilde yeniden düzenleyecek.</p></div>
+            <div><small>SONRAKİ ADIM</small><h3>CV’ni bu ilana özel yeniden yaz</h3><p>JobFit, olmayan tecrübeyi uydurmadan deneyimlerini ATS uyumlu şekilde yeniden düzenleyecek.</p></div>
             <button disabled>Yakında</button>
           </div>
         </section>
